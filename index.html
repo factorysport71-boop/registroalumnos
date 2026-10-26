@@ -90,11 +90,20 @@
 
   /* Historial */
   .table-wrap{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;font-size:15px;min-width:420px}
+  table{width:100%;border-collapse:collapse;font-size:15px;min-width:520px}
   th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
   th{font-weight:600;color:var(--muted);font-size:13px}
   td.num{font-variant-numeric:tabular-nums;font-weight:600}
   td button{min-height:34px;padding:4px 10px;font-size:13px}
+  .delta{font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .delta.up{color:var(--accent)}
+  .delta.down{color:var(--danger)}
+  .delta.same,.delta.first{color:var(--muted);font-weight:500}
+  tr.me td{background:var(--accent-soft)}
+  td.pos{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .cmp{margin:-2px 0 14px;padding:10px 12px;border-radius:10px;border:1.5px dashed var(--line);font-size:15px;display:none}
+  .cmp.show{display:block}
+  .cmp small{display:block;color:var(--muted);font-size:13px}
 
   .toast{
     position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));
@@ -173,6 +182,7 @@
       <div><label for="series">Series</label><input id="series" type="number" inputmode="numeric" min="1" placeholder="4"></div>
       <div><label for="reps">Repeticiones</label><input id="reps" type="number" inputmode="numeric" min="1" placeholder="10"></div>
     </div>
+    <div class="cmp" id="cmpPeso" aria-live="polite"></div>
     <div style="margin-bottom:14px">
       <label for="fecha">Fecha</label>
       <input id="fecha" type="date">
@@ -190,6 +200,25 @@
       </select>
     </div>
     <div class="table-wrap" id="histWrap"></div>
+  </section>
+
+  <!-- 5b. Ranking -->
+  <section aria-labelledby="t-rank">
+    <h2 id="t-rank">Ranking de alumnos</h2>
+    <div class="row" style="margin-bottom:12px">
+      <div>
+        <label for="rankEj">Ejercicio</label>
+        <select id="rankEj"></select>
+      </div>
+      <div>
+        <label for="rankMod">Ordenar por</label>
+        <select id="rankMod">
+          <option value="max">Mejor marca</option>
+          <option value="last">Último registro</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-wrap" id="rankWrap"></div>
   </section>
 
   <!-- 6. Google Sheets -->
@@ -242,7 +271,7 @@
 
   var $ = function(id){return document.getElementById(id)};
   var state = load();
-  var ui = { grupo: GRUPOS[0], ejercicio: null, editar: false };
+  var ui = { grupo: GRUPOS[0], ejercicio: null, editar: false, rank: null };
 
   function load(){
     var s = null;
@@ -273,6 +302,13 @@
   function regsAlumno(id){
     return state.registros.filter(function(r){return r.alumnoId===id})
       .sort(function(a,b){ return a.fecha<b.fecha?1:a.fecha>b.fecha?-1:(a.creado<b.creado?1:-1); });
+  }
+  function deltaInfo(peso, prev){
+    if(!prev) return {cls:'first', txt:'Primer registro'};
+    var d=Math.round((peso-prev.peso)*100)/100;
+    if(d>0) return {cls:'up', txt:'▲ +'+fmtKg(d)+' kg', d:d};
+    if(d<0) return {cls:'down', txt:'▼ −'+fmtKg(Math.abs(d))+' kg', d:d};
+    return {cls:'same', txt:'= Igual', d:0};
   }
   function ultimo(alumnoId, ej){
     return regsAlumno(alumnoId).find(function(r){return r.ejercicio===ej});
@@ -312,7 +348,7 @@
       b.setAttribute('aria-pressed', ej===ui.ejercicio?'true':'false');
       var u = a ? ultimo(a.id, ej) : null;
       b.innerHTML = '<span>'+esc(ej)+'</span>' + (u ? '<small>Último: '+fmtKg(u.peso)+' kg</small>' : '');
-      b.addEventListener('click', function(){ ui.ejercicio=ej; renderEjercicios(); renderNow(); renderHistorial(); $('peso').focus(); });
+      b.addEventListener('click', function(){ ui.ejercicio=ej; ui.rank=ej; renderEjercicios(); renderNow(); renderHistorial(); renderCmp(); renderRanking(); $('peso').focus(); });
       row.appendChild(b);
       if(ui.editar){
         var d=document.createElement('button'); d.type='button'; d.className='del danger'; d.textContent='✕';
@@ -336,16 +372,61 @@
     n.innerHTML = esc(a.nombre)+' · '+esc(ui.ejercicio)+
       '<span>'+(u ? 'Última vez ('+fmtFecha(u.fecha)+'): '+fmtKg(u.peso)+' kg × '+(u.series||'-')+' series × '+(u.reps||'-')+' reps' : 'Primer registro de este ejercicio')+'</span>';
   }
+  function renderRanking(){
+    var sel=$('rankEj'), w=$('rankWrap');
+    var vistos={};
+    state.registros.forEach(function(r){ vistos[r.ejercicio]=true; });
+    var lista=Object.keys(vistos).sort(function(a,b){return a.localeCompare(b,'es')});
+    sel.innerHTML='';
+    if(!lista.length){ sel.innerHTML='<option value="">Sin registros</option>'; w.innerHTML='<div class="empty">Cuando cargues pesos, acá aparece el ranking.</div>'; return; }
+    lista.forEach(function(ej){ var o=document.createElement('option'); o.value=ej; o.textContent=ej; sel.appendChild(o); });
+    if(!ui.rank || !vistos[ui.rank]) ui.rank = (ui.ejercicio && vistos[ui.ejercicio]) ? ui.ejercicio : lista[0];
+    sel.value=ui.rank;
+    var modo=$('rankMod').value, filas=[];
+    state.alumnos.forEach(function(al){
+      var regs=regsAlumno(al.id).filter(function(r){return r.ejercicio===ui.rank});
+      if(!regs.length) return;
+      var mejor=regs[0];
+      if(modo==='max') regs.forEach(function(r){ if(r.peso>mejor.peso) mejor=r; });
+      filas.push({al:al, r:mejor});
+    });
+    filas.sort(function(a,b){ return b.r.peso-a.r.peso || a.al.nombre.localeCompare(b.al.nombre,'es'); });
+    var sin=state.alumnos.length-filas.length;
+    if(!filas.length){ w.innerHTML='<div class="empty">Nadie tiene registros de este ejercicio.</div>'; return; }
+    var medallas=['🥇','🥈','🥉'], pos=0, h='<table><thead><tr><th>#</th><th>Alumno</th><th>Kg</th><th>Series × reps</th><th>Fecha</th></tr></thead><tbody>';
+    filas.forEach(function(f,i){
+      if(i===0 || f.r.peso!==filas[i-1].r.peso) pos=i+1;
+      h+='<tr'+(f.al.id===state.alumnoActual?' class="me"':'')+'><td class="pos">'+(pos<=3?medallas[pos-1]+' ':'')+pos+'</td><td>'+esc(f.al.nombre)+'</td>'+
+         '<td class="num">'+fmtKg(f.r.peso)+'</td><td>'+(f.r.series||'-')+' × '+(f.r.reps||'-')+'</td><td>'+fmtFecha(f.r.fecha)+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    if(sin>0) h+='<p class="note">'+sin+(sin===1?' alumno sin registros':' alumnos sin registros')+' de este ejercicio.</p>';
+    w.innerHTML=h;
+  }
+  function renderCmp(){
+    var a=alumno(), box=$('cmpPeso');
+    var raw=String($('peso').value).replace(',','.'), peso=parseFloat(raw);
+    if(!a || !ui.ejercicio || isNaN(peso)){ box.className='cmp'; box.innerHTML=''; return; }
+    var u=ultimo(a.id, ui.ejercicio), di=deltaInfo(peso, u);
+    box.className='cmp show';
+    box.innerHTML = u
+      ? '<span class="delta '+di.cls+'">'+di.txt+'</span> respecto a la última vez<small>Antes: '+fmtKg(u.peso)+' kg ('+fmtFecha(u.fecha)+') · Ahora: '+fmtKg(peso)+' kg</small>'
+      : '<span class="delta first">Primer registro de este ejercicio</span>';
+  }
   function renderHistorial(){
     var w=$('histWrap'), a=alumno();
     if(!a){ w.innerHTML='<div class="empty">Creá un alumno para ver su historial.</div>'; return; }
-    var regs=regsAlumno(a.id);
+    var todos=regsAlumno(a.id), regs=todos;
+    var prevDe={};
+    todos.forEach(function(r,i){
+      for(var j=i+1;j<todos.length;j++){ if(todos[j].ejercicio===r.ejercicio){ prevDe[r.id]=todos[j]; break; } }
+    });
     if($('filtroHist').value==='ejercicio' && ui.ejercicio) regs=regs.filter(function(r){return r.ejercicio===ui.ejercicio});
     if(!regs.length){ w.innerHTML='<div class="empty">Todavía no hay registros.</div>'; return; }
-    var h='<table><thead><tr><th>Fecha</th><th>Ejercicio</th><th>Kg</th><th>Series × reps</th><th></th></tr></thead><tbody>';
+    var h='<table><thead><tr><th>Fecha</th><th>Ejercicio</th><th>Kg</th><th>Vs anterior</th><th>Series × reps</th><th></th></tr></thead><tbody>';
     regs.slice(0,60).forEach(function(r){
       h+='<tr><td>'+fmtFecha(r.fecha)+'</td><td>'+esc(r.ejercicio)+'<br><span style="color:var(--muted);font-size:13px">'+esc(r.grupo)+'</span></td>'+
-         '<td class="num">'+fmtKg(r.peso)+'</td><td>'+(r.series||'-')+' × '+(r.reps||'-')+'</td>'+
+         '<td class="num">'+fmtKg(r.peso)+'</td>'+(function(){var di=deltaInfo(r.peso,prevDe[r.id]);return '<td><span class="delta '+di.cls+'">'+di.txt+'</span></td>';})()+'<td>'+(r.series||'-')+' × '+(r.reps||'-')+'</td>'+
          '<td><button data-del="'+r.id+'" class="danger" aria-label="Borrar registro">Borrar</button></td></tr>';
     });
     h+='</tbody></table>';
@@ -362,7 +443,7 @@
     });
   }
   function renderAll(){
-    renderAlumnos(); renderGrupos(); renderEjercicios(); renderNow(); renderHistorial();
+    renderAlumnos(); renderGrupos(); renderEjercicios(); renderNow(); renderHistorial(); renderCmp(); renderRanking();
     var aSel=alumno(); $('selInfo').innerHTML='Alumno elegido: '+esc(aSel?aSel.nombre:'ninguno')+'<span>Los botones "individual" usan a este alumno.</span>';
     $('btnEditar').setAttribute('aria-pressed', ui.editar?'true':'false');
     $('btnEditar').textContent = ui.editar ? 'Listo' : 'Editar lista';
@@ -407,6 +488,7 @@
     var peso=parseFloat(String($('peso').value).replace(',','.'));
     if(isNaN(peso) || peso<0){ toast('Cargá el peso en kg'); $('peso').focus(); return; }
     var series=parseInt($('series').value,10), reps=parseInt($('reps').value,10);
+    var prevReg=ultimo(a.id, ui.ejercicio), di=deltaInfo(peso, prevReg);
     state.registros.push({
       id:uid(), alumnoId:a.id, fecha:$('fecha').value||hoy(), grupo:ui.grupo, ejercicio:ui.ejercicio,
       peso:peso, series:isNaN(series)?'':series, reps:isNaN(reps)?'':reps, creado:Date.now()
@@ -414,11 +496,14 @@
     var rg=state.registros[state.registros.length-1];
     save();
     $('peso').value='';
-    renderAll(); toast('Guardado: '+fmtKg(peso)+' kg');
+    renderAll(); toast('Guardado: '+fmtKg(peso)+' kg'+(prevReg?' ('+di.txt+')':''));
    
     encolar({accion:'registro',alumno:a.nombre,id:rg.id,fecha:rg.fecha,grupo:rg.grupo,ejercicio:rg.ejercicio,peso:rg.peso,series:rg.series,reps:rg.reps});
   });
 
+  $('peso').addEventListener('input', renderCmp);
+  $('rankEj').addEventListener('change', function(){ ui.rank=this.value; renderRanking(); });
+  $('rankMod').addEventListener('change', renderRanking);
   $('filtroHist').addEventListener('change', renderHistorial);
 
   /* ---------- Excel ---------- */
